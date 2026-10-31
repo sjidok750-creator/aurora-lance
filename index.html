@@ -177,7 +177,7 @@ const Input = (() => {
 
   // 터치: 손가락마다 역할을 나눔 — 버튼(폭탄·집중·오버드라이브·일시정지) / 이동(상대 이동, 화면에서 1:1) / 탭(메뉴)
   const touch = { moveId: null, lx: 0, ly: 0, dx: 0, dy: 0, focus: false, focusId: null, bombTap: false, odTap: false, pauseTap: false, taps: [], starts: new Map(), any: false };
-  let hitButton = () => null, wantMove = () => false, onGesture = null, cssToLog = 1;
+  let hitButton = () => null, wantMove = () => false, onGesture = null, cssToLog = 1, lastTouchEnd = -1e9;
 
   window.addEventListener('keydown', (e) => {
     const a = KEYMAP[e.code];
@@ -211,7 +211,7 @@ const Input = (() => {
     D.addEventListener('touchmove', (e) => {
       for (const t of e.changedTouches) {
         const st = touch.starts.get(t.identifier);
-        if (st && Math.abs(t.clientX - st.x) + Math.abs(t.clientY - st.y) > 14) st.moved = true;
+        if (st && Math.abs(t.clientX - st.x) + Math.abs(t.clientY - st.y) > 22) st.moved = true;
         if (t.identifier === touch.moveId) { touch.dx += t.clientX - touch.lx; touch.dy += t.clientY - touch.ly; touch.lx = t.clientX; touch.ly = t.clientY; }
       }
       if (e.cancelable) e.preventDefault();
@@ -219,11 +219,13 @@ const Input = (() => {
     const end = (e) => {
       for (const t of e.changedTouches) {
         const st = touch.starts.get(t.identifier);
-        if (st && !st.moved && !st.btn && performance.now() - st.t < 700) touch.taps.push({ x: t.clientX, y: t.clientY, t0: st.t });
+        // 판정은 처음 닿은 위치로(손을 떼며 미끄러져도 같은 항목)
+        if (st && !st.moved && !st.btn && performance.now() - st.t < 1200) touch.taps.push({ x: st.x, y: st.y, t0: st.t });
         touch.starts.delete(t.identifier);
         if (t.identifier === touch.moveId) touch.moveId = null;
         if (t.identifier === touch.focusId) { touch.focus = false; touch.focusId = null; }
       }
+      lastTouchEnd = performance.now();
       if (onGesture) onGesture();
       if (e.cancelable) e.preventDefault();
     };
@@ -231,7 +233,10 @@ const Input = (() => {
     D.addEventListener('touchcancel', end, { passive: false });
     D.addEventListener('mousedown', (e) => { rawAny = true; if (anyKeyCb) anyKeyCb(e); });
     // 마우스 클릭도 메뉴 탭으로(터치 기기는 touchend 에서 막혀 클릭이 생기지 않음)
-    D.addEventListener('click', (e) => { touch.taps.push({ x: e.clientX, y: e.clientY, t0: performance.now() - 50 }); if (onGesture) onGesture(); });
+    D.addEventListener('click', (e) => {
+      if (performance.now() - lastTouchEnd < 1000) return;   // 터치 뒤 브라우저가 보내는 유령 클릭
+      touch.taps.push({ x: e.clientX, y: e.clientY, t0: performance.now() - 50 }); if (onGesture) onGesture();
+    });
   }
 
   function pollPad() {
@@ -4587,6 +4592,14 @@ const UI = (() => {
     else if (P.pause && screen === 'pause') resume();
   }
 
+  // 터치가 닿아 있는 동안 그 줄을 선택 표시(손가락 아래 무엇이 눌릴지 바로 보이게)
+  function touchPreview() {
+    for (const st of Input.touch.starts.values()) {
+      if (st.moved || st.btn || st.t < screenSince) continue;
+      const p = toLog(st);
+      for (const h of hits) if (p.x >= h.x0 && p.x <= h.x1 && p.y >= h.y0 && p.y <= h.y1) { if (sel !== h.i) { sel = h.i; AudioSys.sfx('menuMove'); } return; }
+    }
+  }
   function menuTaps(taps, items) {
     for (const tp of taps) {
       for (const h of hits) {
@@ -4604,11 +4617,12 @@ const UI = (() => {
     const P = Input.pressed;
     if (screen !== lastScreen) { lastScreen = screen; screenSince = performance.now(); }
     const taps = Input.takeTaps().filter((tp) => tp.t0 >= screenSince).map(toLog);
+    if (L.touch && ['title', 'pause', 'options', 'stageSelect', 'gameover'].includes(screen)) touchPreview();
     switch (screen) {
       case 'boot': break;
       case 'title':
         idle++;
-        if (t < 15) { Input.clearPressed(); break; }
+        if (t < 15) Input.clearPressed();   // 부팅에 쓴 키가 메뉴를 누르지 않게(터치는 화면 전환 시각으로 거름)
         menuInput(MENUS.title());
         if (screen === 'title') menuTaps(taps, MENUS.title());
         if (idle > 60 * 25) startDemo();
@@ -4794,11 +4808,12 @@ const UI = (() => {
   function drawMenu(items, x0, y0, gap = 34, wide = 300) {
     items.forEach((it, i) => {
       const y = y0 + i * gap, on = i === sel;
-      hits.push({ x0: x0 - wide / 2, x1: x0 + wide / 2, y0: y - gap / 2, y1: y + gap / 2, i });
+      hits.push(L.touch ? { x0: 0, x1: W, y0: y - gap / 2, y1: y + gap / 2, i } : { x0: x0 - wide / 2, x1: x0 + wide / 2, y0: y - gap / 2, y1: y + gap / 2, i });
+      const bh = L.touch ? gap - 8 : 28;
       if (on) {
         const g = cx.createLinearGradient(x0 - wide / 2, 0, x0 + wide / 2, 0);
         g.addColorStop(0, 'rgba(40,200,255,0)'); g.addColorStop(0.5, 'rgba(40,200,255,0.28)'); g.addColorStop(1, 'rgba(40,200,255,0)');
-        cx.fillStyle = g; cx.fillRect(x0 - wide / 2, y - 14, wide, 28);
+        cx.fillStyle = g; cx.fillRect(x0 - wide / 2, y - bh / 2, wide, bh);
         txt('▶', x0 - wide / 2 + 14 + Math.sin(t * 0.15) * 3, y, 11, '#7ff', 'center');
       }
       const col = it.locked ? '#5a6478' : on ? '#ffffff' : '#a9b8d0';
@@ -4807,7 +4822,7 @@ const UI = (() => {
         txt(it.value(), x0 + wide / 2 - 16, y, 13, on ? '#9ff4ff' : '#8fb0c8', 'right', 700, FONT_K, 0, wide * 0.46);
       } else {
         const sub = it.en && !L.touch;
-        txt(it.locked ? `${it.label}  🔒` : it.label, x0, y - (sub ? 3 : 0), 16, col, 'center', 800, FONT_K);
+        txt(it.locked ? `${it.label}  🔒` : it.label, x0, y - (sub ? 3 : 0), L.touch ? 18 : 16, col, 'center', 800, FONT_K);
         if (sub) txt(it.en, x0, y + 11, 8, on ? '#7fdcff' : '#5f7590', 'center', 700);
       }
     });
@@ -4818,10 +4833,11 @@ const UI = (() => {
     drawLogo(80 + Math.sin(t * 0.02) * 4);
     txt('오 로 라   랜 스', W / 2, 266, 14, '#bfefff', 'center', 700, FONT_K);
     txt('— 장막 너머로 —', W / 2, 288, 11, '#7fa8c8', 'center', 500, FONT_K);
-    panel(W / 2 - 170, 330, 340, MENUS.title().length * 40 + 20, 0.55);
-    drawMenu(MENUS.title(), W / 2, 356, 40, 320);
-    txt(L.touch ? '항목을 눌러 고르세요' : '↑↓ 선택 · Z·Enter 결정 · ←→ 값 바꾸기 · 마우스 클릭', W / 2, 660, 11, '#7f93b0', 'center', 600, FONT_K);
-    if (Store.get('reached', 1) >= 5) txt('★ ALL CLEAR 기록 보유', W / 2, 682, 11, '#ffe680', 'center', 700, FONT_K);
+    const tn = MENUS.title().length;
+    if (L.touch) { panel(W / 2 - 190, 312, 380, tn * 52 + 20, 0.55); drawMenu(MENUS.title(), W / 2, 338, 52, 360); }
+    else { panel(W / 2 - 170, 330, 340, tn * 40 + 20, 0.55); drawMenu(MENUS.title(), W / 2, 356, 40, 320); }
+    if (!L.touch) txt('↑↓ 선택 · Z·Enter 결정 · ←→ 값 바꾸기 · 마우스 클릭', W / 2, 660, 11, '#7f93b0', 'center', 600, FONT_K);
+    if (Store.get('reached', 1) >= 5) txt('★ ALL CLEAR 기록 보유', W / 2, L.touch ? 736 : 682, 11, '#ffe680', 'center', 700, FONT_K);
     txt('v1.0 · 2026', W - 10, H - 12, 9, '#4a5a70', 'right', 600);
     cx.globalAlpha = 1;
   }
@@ -4904,14 +4920,14 @@ const UI = (() => {
   function drawPause() {
     cx.fillStyle = 'rgba(0,4,14,0.6)'; cx.fillRect(0, 0, W, H);
     spaced('PAUSE', W / 2, 250, 34, '#bff6ff', 10, 900, 14);
-    panel(W / 2 - 150, 300, 300, MENUS.pause().length * 40 + 20);
-    drawMenu(MENUS.pause(), W / 2, 326, 40, 280);
+    if (L.touch) { panel(W / 2 - 180, 296, 360, MENUS.pause().length * 56 + 20); drawMenu(MENUS.pause(), W / 2, 324, 56, 340); }
+    else { panel(W / 2 - 150, 300, 300, MENUS.pause().length * 40 + 20); drawMenu(MENUS.pause(), W / 2, 326, 40, 280); }
   }
   function drawOptions() {
     cx.fillStyle = 'rgba(0,4,14,0.75)'; cx.fillRect(0, 0, W, H);
     spaced('OPTIONS', W / 2, 140, 26, '#9ff4ff', 8, 900, 10);
-    panel(W / 2 - 200, 180, 400, MENUS.options().length * 38 + 24);
-    drawMenu(MENUS.options(), W / 2, 206, 38, 380);
+    if (L.touch) { panel(W / 2 - 215, 150, 430, MENUS.options().length * 44 + 20); drawMenu(MENUS.options(), W / 2, 176, 44, 410); }
+    else { panel(W / 2 - 200, 180, 400, MENUS.options().length * 38 + 24); drawMenu(MENUS.options(), W / 2, 206, 38, 380); }
     txt(L.touch ? '항목을 눌러 바꾸기' : '←→ 값 바꾸기 · X 돌아가기', W / 2, H - 40, 11, '#7f93b0', 'center', 600, FONT_K);
   }
   function drawStageSelect() {
@@ -4919,8 +4935,9 @@ const UI = (() => {
     spaced('PRACTICE', W / 2, 150, 26, '#ffd66b', 8, 900, 10);
     txt('도달한 스테이지만 고를 수 있습니다 (파워가 미리 채워짐)', W / 2, 180, 11, '#a9b8d0', 'center', 600, FONT_K);
     const items = MENUS.stageSelect();
-    panel(W / 2 - 200, 210, 400, items.length * 44 + 20);
-    drawMenu(items, W / 2, 238, 44, 380);
+    const sg = L.touch ? 54 : 44;
+    panel(W / 2 - 210, 210, 420, items.length * sg + 20);
+    drawMenu(items, W / 2, 238, sg, 400);
   }
   function drawResult() {
     const r = Game.result; if (!r) return;
@@ -4943,9 +4960,9 @@ const UI = (() => {
     cx.fillStyle = 'rgba(20,0,6,0.55)'; cx.fillRect(0, 0, W, H);
     spaced('GAME OVER', W / 2, 270, 40, '#ff5a6a', 8, 900, 16);
     txt(`SCORE ${fmtScore(Game.score)}`, W / 2, 315, 15, '#ffd0d8', 'center', 800);
-    panel(W / 2 - 150, 350, 300, 100);
-    drawMenu(MENUS.gameover(), W / 2, 380, 42, 280);
-    txt('이어하면 점수는 0 부터 다시 셉니다', W / 2, 480, 11, '#c09098', 'center', 600, FONT_K);
+    if (L.touch) { panel(W / 2 - 180, 344, 360, 136); drawMenu(MENUS.gameover(), W / 2, 384, 58, 340); }
+    else { panel(W / 2 - 150, 350, 300, 100); drawMenu(MENUS.gameover(), W / 2, 380, 42, 280); }
+    txt('이어하면 점수는 0 부터 다시 셉니다', W / 2, L.touch ? 506 : 480, 11, '#c09098', 'center', 600, FONT_K);
   }
   function drawEnding() {
     const e = endingT;
@@ -4991,6 +5008,7 @@ const UI = (() => {
     if (!live) {
       ptxt('AURORA LANCE', SP.x + SP.w / 2, SP.y + Math.min(SP.h / 2, 60), 15, 'rgba(160,230,255,0.55)', 'center', 900);
       ptxt('오로라 랜스', SP.x + SP.w / 2, SP.y + Math.min(SP.h / 2, 60) + 22, 11, 'rgba(160,200,230,0.45)', 'center', 600, FONT_K);
+      if (screen === 'title') ptxt('메뉴 항목을 손가락으로 누르세요', SP.x + SP.w / 2, SP.y + Math.min(SP.h / 2, 60) + 56, 13, 'rgba(190,235,255,0.8)', 'center', 700, FONT_K);
       return;
     }
     const m = G.mult * (G.od.on ? 2 : 1), lv = PL.level, odReady = G.od.gauge >= 100 && !G.od.on;
