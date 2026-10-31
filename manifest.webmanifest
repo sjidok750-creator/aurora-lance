@@ -1,0 +1,16 @@
+{
+  "name": "AURORA LANCE — 오로라 랜스",
+  "short_name": "오로라 랜스",
+  "description": "브라우저 세로 탄막 슈팅 게임",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#02040a",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
